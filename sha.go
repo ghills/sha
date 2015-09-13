@@ -2,25 +2,16 @@ package main
 
 import "fmt"
 import "encoding/hex"
+import "io"
 import "os"
-import "io/ioutil"
-import "log"
+import "github.com/hillsg/sha/mysha1"
 
-type devNullWriter int
-
-const BlockSize = 64
-const BlockSizeInWords = 16
+const BlockSizeInWords = (mysha1.BlockSize / 4)
 const Size = 20
-const enable_logging = false
-
-var logger *log.Logger
+const debug = false
 
 func word(in []byte) uint32 {
 	return uint32(in[0])<<24 | uint32(in[1])<<16 | uint32(in[2])<<8 | uint32(in[3])
-}
-
-func (*devNullWriter) Write(p []byte) (n int, err error) {
-	return len(p), nil
 }
 
 // F function as defined in RFC
@@ -51,29 +42,6 @@ func k(i int) uint32 {
 	return 0
 }
 
-func pad(msg []byte) []byte {
-	l := len(msg)
-	to_add := BlockSize - (l % BlockSize)
-	if to_add < 9 {
-		// not enough room for pad and len, add another block
-		to_add += BlockSize
-	}
-	padding := make([]byte, to_add)
-
-	// set first pad bit to 0
-	padding[0] = 0x80
-
-	// set l at end of padding - change to bit length
-	bitlength := uint64(l) * 8
-	logger.Println("bitlength", bitlength)
-	for i := 0; i < 8; i++ {
-		mask := uint64(0xFF) << uint64(8*i)
-		padding[len(padding)-(i+1)] = uint8((bitlength & mask) >> uint64(8*i))
-	}
-
-	return append(msg, padding...)
-}
-
 // initialize H as defined in RFC
 func init_h_array(h []uint32) {
 	h[0] = 0x67452301
@@ -82,9 +50,12 @@ func init_h_array(h []uint32) {
 	h[3] = 0x10325476
 	h[4] = 0xC3D2E1F0
 
-	logger.Println("initial h values:")
-	for i, value := range h {
-		logger.Printf("h[%d] = 0x%X\n", i, value)
+	if debug {
+		fmt.Println("initial h values:")
+
+		for i, value := range h {
+			fmt.Printf("h[%d] = 0x%X\n", i, value)
+		}
 	}
 }
 
@@ -109,13 +80,11 @@ func unpack_data(h []uint32, buf []byte) {
 
 func print_w(w []uint32, lower int, upper int) {
 	for i := lower; i <= upper; i++ {
-		logger.Printf("w[%d] = 0x%08X\n", i, w[i])
+		fmt.Printf("w[%d] = 0x%08X\n", i, w[i])
 	}
 }
 
-func digest(msg []byte) []byte {
-	msg = pad(msg)
-
+func digest(reader io.Reader) []byte {
 	var a, b, c, d, e, temp uint32
 	h := make([]uint32, 5)
 	w := make([]uint32, 80)
@@ -123,15 +92,20 @@ func digest(msg []byte) []byte {
 	init_h_array(h)
 
 	// for each block
-	for i := 0; i < len(msg)/BlockSize; i++ {
-		logger.Println("processing block", i)
+	buf := make([]byte, mysha1.BlockSize)
+	for n, err := reader.Read(buf); n > 0; n, err = reader.Read(buf) {
+		if debug {
+			fmt.Println("processing new block")
+		}
 
 		// step a - load up w
 		for j := 0; j < BlockSizeInWords; j++ {
-			w[j] = word_at(msg, BlockSize*i+4*j)
+			w[j] = word_at(buf, 4*j)
 		}
-		logger.Println("Block 1 words")
-		print_w(w, 0, 15)
+		if debug {
+			fmt.Println("Block words")
+			print_w(w, 0, 15)
+		}
 
 		// step b
 		for t := 16; t <= 79; t++ {
@@ -146,7 +120,9 @@ func digest(msg []byte) []byte {
 		e = h[4]
 
 		// step d
-		logger.Println("\t\tA\t\tB\t\tC\t\tD\t\tE")
+		if debug {
+			fmt.Println("\t\tA\t\tB\t\tC\t\tD\t\tE")
+		}
 		for t := 0; t <= 79; t++ {
 			temp = s(a, 5) + f(t, b, c, d) + e + w[t] + k(t)
 			e = d
@@ -155,7 +131,9 @@ func digest(msg []byte) []byte {
 			b = a
 			a = temp
 
-			logger.Printf("t = %2d: %08X\t%08X\t%08X\t%08X\t%08X\n", t, a, b, c, d, e)
+			if debug {
+				fmt.Printf("t = %2d: %08X\t%08X\t%08X\t%08X\t%08X\n", t, a, b, c, d, e)
+			}
 		}
 
 		//step e
@@ -165,7 +143,13 @@ func digest(msg []byte) []byte {
 		h[3] = h[3] + d
 		h[4] = h[4] + e
 
-		logger.Println("")
+		if debug {
+			fmt.Println("")
+		}
+
+		if err == io.EOF {
+			break
+		}
 	}
 
 	//var out [Size]byte
@@ -176,13 +160,6 @@ func digest(msg []byte) []byte {
 }
 
 func main() {
-	if enable_logging {
-		logger = log.New(os.Stdout, "", log.Lshortfile)
-	} else {
-		logger = log.New(new(devNullWriter), "", log.Lshortfile)
-	}
-
-	bytes, _ := ioutil.ReadAll(os.Stdin)
-	hash := digest(bytes)
+	hash := digest(mysha1.NewBlockReader(os.Stdin))
 	fmt.Println(hex.EncodeToString(hash))
 }
