@@ -6,19 +6,29 @@ import "io"
 const outSz = 20
 const debug = false
 
+// RFC reads such that bitstream is interpreted as words
+// that are big endian
 func word(in []byte) uint32 {
-	return uint32(in[0])<<24 | uint32(in[1])<<16 | uint32(in[2])<<8 | uint32(in[3])
+	return uint32(in[0])<<24 |
+		uint32(in[1])<<16 |
+		uint32(in[2])<<8 |
+		uint32(in[3])
+}
+
+func word_at(msg []byte, i int) uint32 {
+	return word(msg[i : i+4])
 }
 
 // F function as defined in RFC
 func f(i int, b uint32, c uint32, d uint32) uint32 {
-	if i <= 19 {
+	switch {
+	case i <= 19:
 		return (b & c) | (^b & d)
-	} else if i <= 39 {
+	case i <= 39:
 		return b ^ c ^ d
-	} else if i <= 59 {
+	case i <= 59:
 		return (b & c) | (b & d) | (c & d)
-	} else if i <= 79 {
+	case i <= 79:
 		return b ^ c ^ d
 	}
 	return 0
@@ -26,13 +36,14 @@ func f(i int, b uint32, c uint32, d uint32) uint32 {
 
 // K constants as defined in RFC
 func k(i int) uint32 {
-	if i <= 19 {
+	switch {
+	case i <= 19:
 		return 0x5A827999
-	} else if i <= 39 {
+	case i <= 39:
 		return 0x6ED9EBA1
-	} else if i <= 59 {
+	case i <= 59:
 		return 0x8F1BBCDC
-	} else if i <= 79 {
+	case i <= 79:
 		return 0xCA62C1D6
 	}
 	return 0
@@ -53,10 +64,6 @@ func init_h_array(h []uint32) {
 			fmt.Printf("h[%d] = 0x%X\n", i, value)
 		}
 	}
-}
-
-func word_at(msg []byte, i int) uint32 {
-	return word(msg[i : i+4])
 }
 
 // circular shift as defined in RFC
