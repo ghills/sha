@@ -1,19 +1,29 @@
 package main
 
 import "fmt"
-import "math/big"
 import "encoding/hex"
 import "os"
 import "io/ioutil"
+import "log"
+
+type devNullWriter int
 
 const BlockSize = 64
 const BlockSizeInWords = 16
 const Size = 20
+const enable_logging = false
+
+var logger *log.Logger
 
 func word(in []byte) uint32 {
 	return uint32(in[0])<<24 | uint32(in[1])<<16 | uint32(in[2])<<8 | uint32(in[3])
 }
 
+func (*devNullWriter) Write(p []byte) (n int, err error) {
+	return len(p), nil
+}
+
+// F function as defined in RFC
 func f(i int, b uint32, c uint32, d uint32) uint32 {
 	if i <= 19 {
 		return (b & c) | (^b & d)
@@ -27,6 +37,7 @@ func f(i int, b uint32, c uint32, d uint32) uint32 {
 	return 0
 }
 
+// K constants as defined in RFC
 func k(i int) uint32 {
 	if i <= 19 {
 		return 0x5A827999
@@ -54,7 +65,7 @@ func pad(msg []byte) []byte {
 
 	// set l at end of padding - change to bit length
 	bitlength := uint64(l) * 8
-	fmt.Println("bitlength", bitlength)
+	logger.Println("bitlength", bitlength)
 	for i := 0; i < 8; i++ {
 		mask := uint64(0xFF) << uint64(8*i)
 		padding[len(padding)-(i+1)] = uint8((bitlength & mask) >> uint64(8*i))
@@ -63,6 +74,7 @@ func pad(msg []byte) []byte {
 	return append(msg, padding...)
 }
 
+// initialize H as defined in RFC
 func init_h_array(h []uint32) {
 	h[0] = 0x67452301
 	h[1] = 0xEFCDAB89
@@ -70,9 +82,9 @@ func init_h_array(h []uint32) {
 	h[3] = 0x10325476
 	h[4] = 0xC3D2E1F0
 
-	fmt.Println("initial h values:")
+	logger.Println("initial h values:")
 	for i, value := range h {
-		fmt.Printf("h[%d] = 0x%X\n", i, value)
+		logger.Printf("h[%d] = 0x%X\n", i, value)
 	}
 }
 
@@ -80,10 +92,12 @@ func word_at(msg []byte, i int) uint32 {
 	return word(msg[i : i+4])
 }
 
+// circular shift as defined in RFC
 func s(x uint32, n uint) uint32 {
 	return (x << n) | (x >> (32 - n))
 }
 
+// unpacks H array to output byte buffer
 func unpack_data(h []uint32, buf []byte) {
 	for i := 0; i < len(h); i++ {
 		buf[4*i+0] = byte((h[i] >> 24) & 0xFF)
@@ -93,30 +107,14 @@ func unpack_data(h []uint32, buf []byte) {
 	}
 }
 
-func mod_add(x, y uint32) uint32 {
-	var product, z big.Int
-	bigx := big.NewInt(int64(x))
-	bigy := big.NewInt(int64(y))
-	product.Add(bigx, bigy)
-	z.Mod(&product, big.NewInt(1<<32))
-
-	return uint32(z.Int64())
-}
-
 func print_w(w []uint32, lower int, upper int) {
 	for i := lower; i <= upper; i++ {
-		fmt.Printf("w[%d] = 0x%08X\n", i, w[i])
+		logger.Printf("w[%d] = 0x%08X\n", i, w[i])
 	}
 }
 
 func digest(msg []byte) []byte {
 	msg = pad(msg)
-
-	// make into uint32s to process words
-	data := make([]uint32, len(msg)/4)
-	for i := 0; i < len(data); i++ {
-		data[i] = word_at(msg, 4*i)
-	}
 
 	var a, b, c, d, e, temp uint32
 	h := make([]uint32, 5)
@@ -125,14 +123,14 @@ func digest(msg []byte) []byte {
 	init_h_array(h)
 
 	// for each block
-	for i := 0; i < len(data)/BlockSizeInWords; i++ {
-		fmt.Println("processing block", i)
+	for i := 0; i < len(msg)/BlockSize; i++ {
+		logger.Println("processing block", i)
 
 		// step a - load up w
 		for j := 0; j < BlockSizeInWords; j++ {
-			w[j] = data[BlockSizeInWords*i+j]
+			w[j] = word_at(msg, BlockSize*i+4*j)
 		}
-		fmt.Println("Block 1 words")
+		logger.Println("Block 1 words")
 		print_w(w, 0, 15)
 
 		// step b
@@ -148,29 +146,26 @@ func digest(msg []byte) []byte {
 		e = h[4]
 
 		// step d
-		fmt.Println("\t\tA\t\tB\t\tC\t\tD\t\tE")
+		logger.Println("\t\tA\t\tB\t\tC\t\tD\t\tE")
 		for t := 0; t <= 79; t++ {
-			temp = mod_add(
-				mod_add(
-					mod_add(
-						mod_add(s(a, 5), f(t, b, c, d)), e), w[t]), k(t))
+			temp = s(a, 5) + f(t, b, c, d) + e + w[t] + k(t)
 			e = d
 			d = c
 			c = s(b, 30)
 			b = a
 			a = temp
 
-			fmt.Printf("t = %2d: %08X\t%08X\t%08X\t%08X\t%08X\n", t, a, b, c, d, e)
+			logger.Printf("t = %2d: %08X\t%08X\t%08X\t%08X\t%08X\n", t, a, b, c, d, e)
 		}
 
 		//step e
-		h[0] = mod_add(h[0], a)
-		h[1] = mod_add(h[1], b)
-		h[2] = mod_add(h[2], c)
-		h[3] = mod_add(h[3], d)
-		h[4] = mod_add(h[4], e)
+		h[0] = h[0] + a
+		h[1] = h[1] + b
+		h[2] = h[2] + c
+		h[3] = h[3] + d
+		h[4] = h[4] + e
 
-		fmt.Println("")
+		logger.Println("")
 	}
 
 	//var out [Size]byte
@@ -181,6 +176,12 @@ func digest(msg []byte) []byte {
 }
 
 func main() {
+	if enable_logging {
+		logger = log.New(os.Stdout, "", log.Lshortfile)
+	} else {
+		logger = log.New(new(devNullWriter), "", log.Lshortfile)
+	}
+
 	bytes, _ := ioutil.ReadAll(os.Stdin)
 	hash := digest(bytes)
 	fmt.Println(hex.EncodeToString(hash))
